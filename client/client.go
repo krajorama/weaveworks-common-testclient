@@ -14,6 +14,7 @@ import (
 	"github.com/weaveworks/common/httpgrpc"
 	"github.com/weaveworks/common/logging"
 	"github.com/weaveworks/common/middleware"
+	"github.com/weaveworks/common/user"
 	"google.golang.org/grpc"
 )
 
@@ -27,10 +28,7 @@ type Client struct {
 	conn      *grpc.ClientConn
 }
 
-// ParseURL deals with direct:// style URLs, as well as kubernetes:// urls.
-// For backwards compatibility it treats URLs without schems as kubernetes://.
 func ParseURL(unparsed string) (string, error) {
-	// if it has :///, this is the kuberesolver v2 URL. Return it as it is.
 	if strings.Contains(unparsed, ":///") {
 		return unparsed, nil
 	}
@@ -42,30 +40,12 @@ func ParseURL(unparsed string) (string, error) {
 
 	scheme, host := parsed.Scheme, parsed.Host
 	if !strings.Contains(unparsed, "://") {
-		// scheme, host = "kubernetes", unparsed
 		scheme, host = "direct", unparsed
 	}
 
 	switch scheme {
 	case "direct":
 		return host, err
-
-	// case "kubernetes":
-	// 	host, port, err := net.SplitHostPort(host)
-	// 	if err != nil {
-	// 		return "", err
-	// 	}
-	// 	parts := strings.SplitN(host, ".", 3)
-	// 	service, namespace, domain := parts[0], "default", ""
-	// 	if len(parts) > 1 {
-	// 		namespace = parts[1]
-	// 		domain = "." + namespace
-	// 	}
-	// 	if len(parts) > 2 {
-	// 		domain = domain + "." + parts[2]
-	// 	}
-	// 	address := fmt.Sprintf("kubernetes:///%s%s:%s", service, domain, port)
-	// 	return address, nil
 
 	default:
 		return "", fmt.Errorf("unrecognised scheme: %s", parsed.Scheme)
@@ -110,7 +90,7 @@ func HTTPRequest(r *http.Request) (*httpgrpc.HTTPRequest, error) {
 	}
 	return &httpgrpc.HTTPRequest{
 		Method:  r.Method,
-		Url:     r.RequestURI,
+		Url:     r.URL.Path,
 		Body:    body,
 		Headers: fromHeader(r.Header),
 	}, nil
@@ -142,6 +122,12 @@ func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				logging.Global().Warnf("Failed to inject tracing headers into request: %v", err)
 			}
 		}
+	}
+
+	err := user.InjectOrgIDIntoHTTPRequest(r.Context(), r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	req, err := HTTPRequest(r)
